@@ -103,13 +103,14 @@ jobs:
           }
           CPP
 
+      
       - name: Compile qhuaweiflash CLI wrapper
         run: |
           set -euxo pipefail
           cd work/qhuaweiflash
 
           g++ -O2 -Wall -fPIC -no-pie -I. \
-            ../uncompress_fw.cpp ptable.cpp sio.cpp \
+            ../uncompress_fw.cpp ptable.cpp \
             -o ../uncompress_fw \
             $(pkg-config --cflags --libs Qt5Widgets Qt5Core) \
             -lz
