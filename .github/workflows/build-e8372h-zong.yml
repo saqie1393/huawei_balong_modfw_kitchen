@@ -57,13 +57,14 @@ jobs:
         run: |
           g++ -O2 -Wall -fPIC -no-pie \
             tools/bake_firmware.cpp \
+            tools/ptable.cpp \
+            tools/sio.cpp \
             -o work/bake_firmware \
             $(pkg-config --cflags --libs Qt5Widgets Qt5Core) \
             -lz
 
           test -x work/bake_firmware
           echo "Extractor compiled successfully"
-
       - name: Extract System and APP partitions
         env:
           QT_QPA_PLATFORM: offscreen
