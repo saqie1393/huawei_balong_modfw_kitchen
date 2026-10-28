@@ -192,23 +192,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -s ./private.key
-          test -s ./public.key
-          test -s work/modified_r.bin
-
           ./sign -s \
             work/modified_r.bin \
             work/firmware-signed.bin \
             ./private.key \
             ./public.key \
             -sv 1.3 \
-            -i "WEBUI:$WEBUI_VERSION"
+            -i "WEBUI:17.100.20.01.1456_RE5"
 
           test -s work/firmware-signed.bin
-
-          echo "===== Signed firmware ====="
           stat -c '%n: %s bytes' work/firmware-signed.bin
-          file work/firmware-signed.bin
           sha256sum work/firmware-signed.bin
 
       - name: Prepare artifacts
