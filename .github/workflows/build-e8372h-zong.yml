@@ -1,4 +1,3 @@
-
 name: Build E8372h Zong Modified Firmware
 
 on:
@@ -188,7 +187,8 @@ jobs:
           file work/modified_r.bin
           sha256sum work/modified_r.bin
 
-           - name: Sign modified firmware
+      # Sign step - yahan maine quotes hata diye hain
+      - name: Sign modified firmware
         run: |
           set -euo pipefail
           ./sign -s \
@@ -205,27 +205,22 @@ jobs:
           file work/firmware-signed.bin
           sha256sum work/firmware-signed.bin
 
-      # YAHAN CHANGE HAI: Output folder banaya aur file copy ki
       - name: Prepare artifacts
-        if: always() # Agar sign fail bhi ho jaye, tab bhi file upload ho
+        if: always()
         run: |
           set -euo pipefail
           mkdir -p output
           
-          # Unsigned file ko output mein copy karein
           if [ -f work/modified_r.bin ]; then
             cp work/modified_r.bin output/modified-unsigned.bin
           fi
 
-          # Agar sign successful ho jaye toh signed file bhi copy karein
           if [ -f work/firmware-signed.bin ]; then
             cp work/firmware-signed.bin output/firmware-signed.bin
           fi
           
-          # Check karein kya kya bana hai
           ls -lh output/
 
-      # YAHAN CHANGE HAI: Upload Artifact
       - name: Upload BINs for testing
         if: always()
         uses: actions/upload-artifact@v4
