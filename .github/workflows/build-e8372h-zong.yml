@@ -1,3 +1,4 @@
+
 name: Build E8372h Zong Firmware
 
 on:
@@ -16,6 +17,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -23,16 +25,22 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential qtbase5-dev zlib1g-dev cpio
+          sudo apt-get install -y \
+            build-essential \
+            qtbase5-dev \
+            zlib1g-dev \
+            cpio \
+            file
 
       - name: Validate overlay
         env:
           OVERLAY: ${{ inputs.overlay }}
         run: |
-          test -d "device_overlay/$OVERLAY" || {
+          if [ ! -d "device_overlay/$OVERLAY" ]; then
             echo "::error::Overlay not found: device_overlay/$OVERLAY"
             exit 1
-          }
+          fi
+          echo "Overlay found: $OVERLAY"
 
       - name: Download original firmware
         run: |
@@ -41,14 +49,21 @@ jobs:
             "https://github.com/saqie1393/huawei_balong_modfw_kitchen/releases/download/firmware-v1/E8372h_UPDATE_21.333.64.00.1456_WEBUI_17.100.20.01.1456_RE5.bin" \
             -o work/original.bin
 
-            - name: Compile firmware extractor
-          run: |
+          test -s work/original.bin
+          echo "Firmware download successful"
+          ls -lh work/original.bin
+
+      - name: Compile firmware extractor
+        run: |
           g++ -O2 -Wall -fPIC -no-pie \
             tools/bake_firmware.cpp \
             -o work/bake_firmware \
             $(pkg-config --cflags --libs Qt5Widgets Qt5Core) \
             -lz
-         
+
+          test -x work/bake_firmware
+          echo "Extractor compiled successfully"
+
       - name: Extract System and APP partitions
         env:
           QT_QPA_PLATFORM: offscreen
@@ -57,23 +72,36 @@ jobs:
             work/original.bin \
             work/System.bin \
             work/APP.bin
+
+          test -s work/System.bin
+          test -s work/APP.bin
+
           file work/System.bin work/APP.bin
-          test "$(file -b work/System.bin | grep -c 'cpio archive')" -eq 1
-          test "$(file -b work/APP.bin | grep -c 'cpio archive')" -eq 1
+
+          file -b work/System.bin | grep -q "cpio archive"
+          file -b work/APP.bin | grep -q "cpio archive"
+
+          echo "System and APP extraction successful"
 
       - name: Unpack CPIO partitions
         run: |
           mkdir -p orig_fw/system orig_fw/app
+
           (
             cd orig_fw/system
-            cpio -idm --no-absolute-filenames < ../../work/System.bin
+            cpio -idm --no-absolute-filenames \
+              < ../../work/System.bin
           )
+
           (
             cd orig_fw/app
-            cpio -idm --no-absolute-filenames < ../../work/APP.bin
+            cpio -idm --no-absolute-filenames \
+              < ../../work/APP.bin
           )
+
           test -n "$(find orig_fw/system -mindepth 1 -print -quit)"
           test -n "$(find orig_fw/app -mindepth 1 -print -quit)"
+
           echo "System files: $(find orig_fw/system -type f | wc -l)"
           echo "APP files: $(find orig_fw/app -type f | wc -l)"
 
@@ -88,15 +116,25 @@ jobs:
         if: always()
         run: |
           mkdir -p output
-          [ ! -f workdir/system.cpio ] || cp -av workdir/system.cpio output/
-          [ ! -f workdir/app.cpio ] || cp -av workdir/app.cpio output/
-          [ ! -d workdir ] || find workdir -maxdepth 2 -type f -print
+
+          if [ -d workdir ]; then
+            find workdir -maxdepth 4 -type f -print
+            find workdir -maxdepth 4 -type f \
+              \( -name "*.cpio" -o -name "*.bin" -o -name "*.img" \) \
+              -exec cp -v --parents {} output/ \;
+          fi
+
+          if [ -d orig_fw ]; then
+            echo "Unpacked filesystem directories exist."
+          fi
+
           {
-            echo "## Build summary"
+            echo "# E8372h Zong Build Summary"
+            echo
             echo "- Overlay: ${{ inputs.overlay }}"
-            echo "- Original firmware: E8372h 21.333.64.00.1456"
-            echo "- This workflow builds filesystem CPIO outputs only."
-            echo "- It does not assemble or sign a final flashable firmware BIN."
+            echo "- Firmware: E8372h 21.333.64.00.1456"
+            echo "- System and APP partitions extracted and unpacked."
+            echo "- Final firmware assembly and signing are not performed by this workflow."
           } > output/BUILD_SUMMARY.md
 
       - name: Upload build artifacts
