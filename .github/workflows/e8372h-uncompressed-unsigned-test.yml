@@ -27,6 +27,7 @@ jobs:
       - name: Download qhuaweiflash source
         run: |
           set -euxo pipefail
+          mkdir -p work
           git clone --depth 1 https://github.com/forth32/qhuaweiflash.git work/qhuaweiflash
           mkdir -p work/output
 
@@ -35,19 +36,19 @@ jobs:
           set -euxo pipefail
           cat > work/uncompress_fw.cpp <<'CPP'
           #include <QtWidgets/QApplication>
-          #include <QtWidgets/QComboBox>
           #include <cstdio>
           #include <cstdint>
           #include <cstdlib>
-          #include <cstring>
           #include "ptable.h"
           #include "signver.h"
 
+          // Globals normally supplied by the qhuaweiflash GUI application.
+          ptable_list* ptable = nullptr;
           int32_t signlen = -1;
-          char signver_hash[100] = "";
-          QComboBox* pselector = nullptr;
-          void set_modified() {}
+          char signver_hash[100] = {};
+
           void fdirlist(int) {}
+          void set_modified() {}
 
           int main(int argc, char** argv) {
               QApplication app(argc, argv);
@@ -77,14 +78,14 @@ jobs:
                   return 1;
               }
 
-              // Mirrors qhuaweiflash fw_saver(false, false):
-              // 92-byte prefix followed by every partition saved with zlib disabled.
+              // Mirrors fw_saver(false, false): a 92-byte prefix and
+              // every partition saved with zlib compression disabled.
               uint8_t hdr[92] = {};
               extern int dload_id;
               hdr[0] = static_cast<uint8_t>(dload_id & 7);
               if (signlen != -1) hdr[0] |= 0x8;
 
-              bool ok = std::fwrite(hdr, 1, sizeof(hdr), out) == sizeof(hdr);
+              bool ok = (std::fwrite(hdr, 1, sizeof(hdr), out) == sizeof(hdr));
               for (int i = 0; ok && i < table.index(); ++i) {
                   table.save_part(i, out, false);
               }
@@ -102,8 +103,12 @@ jobs:
           }
           CPP
 
+      - name: Compile qhuaweiflash CLI wrapper
+        run: |
+          set -euxo pipefail
           cd work/qhuaweiflash
-          g++ -O2 -Wall \
+
+          g++ -O2 -Wall -fPIC -no-pie -I. \
             ../uncompress_fw.cpp ptable.cpp sio.cpp \
             -o ../uncompress_fw \
             $(pkg-config --cflags --libs Qt5Widgets Qt5Core) \
@@ -132,7 +137,6 @@ jobs:
           echo "Original:      $ORIGINAL_SIZE bytes"
           echo "Uncompressed:  $UNCOMPRESSED_SIZE bytes"
 
-          # Reject the known-bad tiny output case.
           if [ "$UNCOMPRESSED_SIZE" -lt 1000000 ]; then
             echo "::error::Uncompressed output is unexpectedly small; do not use it."
             exit 1
@@ -174,7 +178,7 @@ jobs:
             exit 1
           fi
 
-          echo "PASS: output size looks plausible; this is a size check only, not proof that the firmware is flashable." | tee -a work/unsign-status.txt
+          echo "PASS: size is plausible; this does not prove flashability." | tee -a work/unsign-status.txt
           file work/unsigned.bin
           sha256sum work/unsigned.bin
 
