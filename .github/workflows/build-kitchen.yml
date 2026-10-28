@@ -183,17 +183,17 @@ jobs:
         id: prepare
         run: |
           set -euo pipefail
-          # Create the final firmware name by appending "_custom" to the original name
-          FW_NAME="${{ inputs.original_firmware }}_custom"
+          # Create the final firmware name with "_modfw" instead of "_custom"
+          FW_NAME="${{ inputs.original_firmware }}_modfw"
           FINAL_FILE="${FW_NAME}.bin"
           
+          # Only copy the SIGNED file (no unsigned file)
           cp work/firmware-signed.bin "output/$FINAL_FILE"
-          cp work/modified_r.bin output/modified-unsigned.bin
           
           sha256sum output/* > output/SHA256SUMS.txt
           ls -lh output/
           
-          # Export variables for the next step (Release creation)
+          # Export variables for the Release step
           echo "firmware_name=$FW_NAME" >> $GITHUB_OUTPUT
           echo "firmware_file=$FINAL_FILE" >> $GITHUB_OUTPUT
 
@@ -210,7 +210,7 @@ jobs:
             - **Firmware Version:** ${{ inputs.firmware_version }}
             - **WEBUI Version:** ${{ inputs.webui_version }}
           files: |
-            output/*.bin
+            output/${{ steps.prepare.outputs.firmware_file }}
             output/SHA256SUMS.txt
           draft: false
           prerelease: false
