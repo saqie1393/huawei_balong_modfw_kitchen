@@ -1,4 +1,6 @@
-name: Build E8372h Zong firmware
+from pathlib import Path
+p = Path("/mnt/data/build-firmware.yml")
+p.write_text(r'''name: Build E8372h Zong modified firmware
 
 on:
   workflow_dispatch:
@@ -18,46 +20,59 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install dependencies and i386 compatibility
         run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y build-essential qtbase5-dev zlib1g-dev cpio gzip
+          sudo apt-get install -y \
+            build-essential qtbase5-dev zlib1g-dev cpio gzip file libc6:i386
 
       - name: Download original firmware
         run: |
+          set -euo pipefail
           mkdir -p work orig_fw
           curl -fL "$ORIGINAL_URL" -o "work/$ORIGINAL_NAME"
           test -s "work/$ORIGINAL_NAME"
 
-      - name: Compile firmware partition tool
-        run: |
-          g++ -O2 -Wall -fPIC -no-pie \
-            tools/bake_firmware.cpp tools/ptable.cpp tools/sio.cpp \
-            -o work/bake_firmware \
-            $(pkg-config --cflags --libs Qt5Widgets Qt5Core) -lz
-
-      - name: Remove original firmware signature when sign tool is configured
-        shell: bash
-        env:
-          SIGN_TOOL_B64: ${{ secrets.SIGN_TOOL_B64 }}
+      - name: Check bundled sign tool
         run: |
           set -euo pipefail
-          if [[ -n "${SIGN_TOOL_B64:-}" ]]; then
-            printf '%s' "$SIGN_TOOL_B64" | base64 -d > work/sign
-            chmod +x work/sign
-            QT_QPA_PLATFORM=offscreen work/sign -r "work/$ORIGINAL_NAME"
-            test -s "work/${ORIGINAL_NAME}_r"
-            cp "work/${ORIGINAL_NAME}_r" work/unsigned-original.bin
-          else
-            echo "SIGN_TOOL_B64 not configured; using original firmware as the partition source."
-            cp "work/$ORIGINAL_NAME" work/unsigned-original.bin
+          if [[ ! -f ./sign ]]; then
+            echo "ERROR: ./sign not found in repository root."
+            find . -type f -name sign -print
+            exit 1
           fi
+          file ./sign
+          chmod +x ./sign
+          # Smoke-test that the 32-bit Linux executable starts.
+          # Help/usage may return a non-zero status when no arguments are given.
+          ./sign >/tmp/sign-help.txt 2>&1 || true
+          cat /tmp/sign-help.txt
+
+      - name: Compile firmware partition tool
+        run: |
+          set -euo pipefail
+          g++ -O2 -Wall -fPIC -no-pie \
+            tools/bake_firmware.cpp \
+            tools/ptable.cpp \
+            tools/sio.cpp \
+            -o work/bake_firmware \
+            $(pkg-config --cflags --libs Qt5Widgets Qt5Core) \
+            -lz
+
+      - name: Remove signature from original firmware
+        run: |
+          set -euo pipefail
+          ./sign -r "work/$ORIGINAL_NAME" work/original_r.bin
+          test -s work/original_r.bin
+          file work/original_r.bin
 
       - name: Extract System and APP partitions
         run: |
           set -euo pipefail
           QT_QPA_PLATFORM=offscreen work/bake_firmware extract \
-            work/unsigned-original.bin work/System.bin work/APP.bin
+            work/original_r.bin work/System.bin work/APP.bin
           test -s work/System.bin
           test -s work/APP.bin
           file work/System.bin work/APP.bin
@@ -69,7 +84,7 @@ jobs:
           (cd orig_fw/system && cpio -idm --no-absolute-filenames < ../../work/System.bin)
           (cd orig_fw/app && cpio -idm --no-absolute-filenames < ../../work/APP.bin)
 
-      - name: Build modified firmware filesystems
+      - name: Build modified filesystems
         run: |
           set -euo pipefail
           ./build.sh v7r11 e8372h-153_zong_21.333.64.00.1456 orig_fw
@@ -80,62 +95,58 @@ jobs:
         run: |
           set -euo pipefail
           QT_QPA_PLATFORM=offscreen work/bake_firmware replace \
-            work/unsigned-original.bin \
+            work/original_r.bin \
             workdir/system.cpio \
             workdir/app.cpio \
-            work/modified-unsigned.bin
-          test -s work/modified-unsigned.bin
-          ls -lh work/modified-unsigned.bin
+            work/modified_r.bin
+          test -s work/modified_r.bin
+          ls -lh work/modified_r.bin
 
-      - name: Sign final firmware when signing secrets are configured
-        shell: bash
+      - name: Sign modified firmware
         env:
-          SIGN_TOOL_B64: ${{ secrets.SIGN_TOOL_B64 }}
           PRIVATE_KEY_B64: ${{ secrets.PRIVATE_KEY_B64 }}
           PUBLIC_KEY_B64: ${{ secrets.PUBLIC_KEY_B64 }}
         run: |
           set -euo pipefail
-          if [[ -z "${SIGN_TOOL_B64:-}" || -z "${PRIVATE_KEY_B64:-}" || -z "${PUBLIC_KEY_B64:-}" ]]; then
-            echo "Signing secrets not all configured. Unsigned firmware will be uploaded for inspection only."
-            cp work/modified-unsigned.bin work/firmware-UNSIGNED-DO-NOT-FLASH.bin
-            exit 0
+
+          if [[ -z "${PRIVATE_KEY_B64:-}" || -z "${PUBLIC_KEY_B64:-}" ]]; then
+            echo "ERROR: Add PRIVATE_KEY_B64 and PUBLIC_KEY_B64 under Settings > Secrets and variables > Actions."
+            exit 1
           fi
 
-          # Decode the tool and keys from repository Actions Secrets.
-          printf '%s' "$SIGN_TOOL_B64" | base64 -d > work/sign
           printf '%s' "$PRIVATE_KEY_B64" | base64 -d > work/private.key
           printf '%s' "$PUBLIC_KEY_B64" | base64 -d > work/public.key
-          chmod +x work/sign
 
-          # Re-sign with the firmware's ISO and WebUI version metadata.
-          work/sign -s \
-            work/modified-unsigned.bin \
+          # NOTE: This assumes sign -s accepts:
+          # input output private-key public-key -sv 1.3 -i ISO:<version> WEBUI:<version>.
+          # Confirm this syntax against the bundled sign tool's documented usage before relying on output.
+          ./sign -s \
+            work/modified_r.bin \
             work/firmware-signed.bin \
-            work/private.key work/public.key \
+            work/private.key \
+            work/public.key \
             -sv 1.3 \
             -i "ISO:$WEBUI_VERSION" "WEBUI:$WEBUI_VERSION"
 
           test -s work/firmware-signed.bin
-          mv work/firmware-signed.bin work/firmware-signed.bin.tmp
-          mv work/firmware-signed.bin.tmp work/firmware-signed.bin
+          file work/firmware-signed.bin
 
-      - name: Prepare artifacts
+      - name: Prepare output files
         run: |
+          set -euo pipefail
           mkdir -p output
-          cp work/System.bin work/APP.bin work/modified-unsigned.bin output/
+          cp work/firmware-signed.bin output/
+          cp work/modified_r.bin work/System.bin work/APP.bin output/
           cp workdir/system.cpio workdir/app.cpio output/
-          if [[ -f work/firmware-signed.bin ]]; then
-            cp work/firmware-signed.bin output/
-          elif [[ -f work/firmware-UNSIGNED-DO-NOT-FLASH.bin ]]; then
-            cp work/firmware-UNSIGNED-DO-NOT-FLASH.bin output/
-          fi
           sha256sum output/* > output/SHA256SUMS.txt
           find output -maxdepth 1 -type f -printf '%f %s bytes\n'
 
-      - name: Upload build artifacts
+      - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: e8372h-zong-firmware-build
+          name: e8372h-zong-signed-firmware
           path: output/
           if-no-files-found: error
           retention-days: 7
+''', encoding="utf-8")
+print(f"Updated {p} ({p.stat().st_size} bytes)")
