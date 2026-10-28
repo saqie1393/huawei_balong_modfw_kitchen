@@ -41,11 +41,14 @@ jobs:
             "https://github.com/saqie1393/huawei_balong_modfw_kitchen/releases/download/firmware-v1/E8372h_UPDATE_21.333.64.00.1456_WEBUI_17.100.20.01.1456_RE5.bin" \
             -o work/original.bin
 
-      - name: Compile firmware extractor
-        run: |
-          g++ -O2 -Wall tools/bake_firmware.cpp -o work/bake_firmware \
-            $(pkg-config --cflags --libs Qt5Widgets Qt5Core) -lz
-
+            - name: Compile firmware extractor
+          run: |
+          g++ -O2 -Wall -fPIC -no-pie \
+            tools/bake_firmware.cpp \
+            -o work/bake_firmware \
+            $(pkg-config --cflags --libs Qt5Widgets Qt5Core) \
+            -lz
+         
       - name: Extract System and APP partitions
         env:
           QT_QPA_PLATFORM: offscreen
