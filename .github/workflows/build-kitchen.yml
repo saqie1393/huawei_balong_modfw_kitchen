@@ -101,6 +101,7 @@ jobs:
       - name: Compile firmware partition tool
         run: |
           set -euo pipefail
+          mkdir -p work   # <--- YEH LINE ADD KAREIN
           g++ -O2 -Wall -fPIC -no-pie \
             tools/bake_firmware.cpp tools/ptable.cpp tools/sio.cpp \
             -o work/bake_firmware \
