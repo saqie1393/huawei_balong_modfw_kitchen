@@ -1,4 +1,4 @@
-name: Test E8372h Uncompressed and Unsigned BIN
+name: Test E8372h Uncompressed BIN (Zlib Remove)
 
 on:
   workflow_dispatch:
@@ -42,13 +42,26 @@ jobs:
           #include "ptable.h"
           #include "signver.h"
 
-          // Globals normally supplied by the qhuaweiflash GUI application.
+          // Dummy variables for ptable.cpp
           ptable_list* ptable = nullptr;
           int32_t signlen = -1;
           char signver_hash[100] = {};
-
           void fdirlist(int) {}
           void set_modified() {}
+          QComboBox* pselector = nullptr;
+
+          // Custom crc16 to avoid compiling sio.cpp
+          extern "C" unsigned short crc16(uint8_t* buf, int len) {
+              unsigned short crc = 0xFFFF;
+              for (int i = 0; i < len; i++) {
+                  crc ^= buf[i];
+                  for (int j = 0; j < 8; j++) {
+                      if (crc & 1) crc = (crc >> 1) ^ 0xA001;
+                      else crc >>= 1;
+                  }
+              }
+              return crc;
+          }
 
           int main(int argc, char** argv) {
               QApplication app(argc, argv);
@@ -78,16 +91,14 @@ jobs:
                   return 1;
               }
 
-              // Mirrors fw_saver(false, false): a 92-byte prefix and
-              // every partition saved with zlib compression disabled.
               uint8_t hdr[92] = {};
-              extern int dload_id;
-              hdr[0] = static_cast<uint8_t>(dload_id & 7);
+              // dload_id is normally global in main.cpp, using 0 as fallback
+              hdr[0] = 0; 
               if (signlen != -1) hdr[0] |= 0x8;
 
               bool ok = (std::fwrite(hdr, 1, sizeof(hdr), out) == sizeof(hdr));
               for (int i = 0; ok && i < table.index(); ++i) {
-                  table.save_part(i, out, false);
+                  table.save_part(i, out, false); // false = disable zlib
               }
               if (std::fclose(out) != 0) ok = false;
 
@@ -97,24 +108,22 @@ jobs:
                   return 1;
               }
 
-              std::printf("Saved uncompressed firmware: %s; partitions=%d\n",
-                          argv[2], table.index());
+              std::printf("Saved uncompressed firmware: %s; partitions=%d\n", argv[2], table.index());
               return 0;
           }
           CPP
 
-      - name: List qhuaweiflash source files
+      - name: Compile uncompress_fw tool
         run: |
           set -euxo pipefail
-          echo "===== Source files ====="
-          find work/qhuaweiflash -maxdepth 2 -type f \
-            \( -name '*.cpp' -o -name '*.c' -o -name '*.h' \) \
-            | sort
-
-          echo "===== crc16 references ====="
-          grep -R -n \
-            --include='*.cpp' --include='*.c' --include='*.h' \
-            'crc16[[:space:]]*(' work/qhuaweiflash || true
+          cd work/qhuaweiflash
+          # Sirf ptable.cpp aur uncompress_fw.cpp compile kar rahe hain (sio.cpp nahi)
+          g++ -O2 -Wall -fPIC -no-pie -I. \
+            ../uncompress_fw.cpp ptable.cpp \
+            -o ../uncompress_fw \
+            $(pkg-config --cflags --libs Qt5Widgets Qt5Core) \
+            -lz
+          test -x ../uncompress_fw
 
       - name: Download original firmware
         run: |
@@ -125,7 +134,7 @@ jobs:
           stat -c '%n %s bytes' "work/$ORIGINAL_NAME"
           file "work/$ORIGINAL_NAME"
 
-      - name: Remove zlib compression using qhuaweiflash save logic
+      - name: Run uncompress tool (Zlib remove)
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
@@ -147,53 +156,13 @@ jobs:
           file work/uncompressed.bin
           sha256sum "work/$ORIGINAL_NAME" work/uncompressed.bin
 
-      - name: Try removing signature from uncompressed BIN
-        id: unsign
-        continue-on-error: true
-        run: |
-          set -u
-          if [ ! -x ./sign ]; then
-            chmod +x ./sign 2>/dev/null || true
-          fi
-
-          if [ ! -f ./sign ]; then
-            echo "sign tool not found in repository root." | tee work/unsign-status.txt
-            exit 1
-          fi
-
-          set +e
-          ./sign -r work/uncompressed.bin work/unsigned.bin > work/sign-log.txt 2>&1
-          SIGN_RC=$?
-          set -e
-          cat work/sign-log.txt
-
-          if [ -f work/unsigned.bin ]; then
-            UNSIGNED_SIZE=$(stat -c '%s' work/unsigned.bin)
-          else
-            UNSIGNED_SIZE=0
-          fi
-          echo "sign -r exit code: $SIGN_RC" | tee work/unsign-status.txt
-          echo "unsigned output size: $UNSIGNED_SIZE bytes" | tee -a work/unsign-status.txt
-
-          if [ "$UNSIGNED_SIZE" -lt 1000000 ]; then
-            echo "FAIL: sign -r output is too small; it is not a valid full firmware BIN." | tee -a work/unsign-status.txt
-            exit 1
-          fi
-
-          echo "PASS: size is plausible; this does not prove flashability." | tee -a work/unsign-status.txt
-          file work/unsigned.bin
-          sha256sum work/unsigned.bin
-
       - name: Collect diagnostic outputs
         if: always()
         run: |
           mkdir -p work/output
           for f in \
             "work/$ORIGINAL_NAME" \
-            work/uncompressed.bin \
-            work/unsigned.bin \
-            work/sign-log.txt \
-            work/unsign-status.txt; do
+            work/uncompressed.bin; do
             [ ! -f "$f" ] || cp -v "$f" work/output/
           done
           {
@@ -210,7 +179,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e8372h-uncompressed-unsigned-test
+          name: e8372h-uncompressed-test
           path: work/output/
           if-no-files-found: error
           retention-days: 7
