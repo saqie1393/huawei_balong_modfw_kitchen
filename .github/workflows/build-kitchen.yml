@@ -1,4 +1,4 @@
-name: Huawei Balong ModFW Kitchen
+name: Huawei Balong ModFW Kitchen (Universal Builder)
 
 on:
   workflow_dispatch:
@@ -33,17 +33,38 @@ on:
           - "e8372h-153_zong_21.328.62.02.1460/root/system"
           - "e8372h-153_zong_21.333.64.00.1456"
           - "e8372h-608_telenor_21.333.63.00.1460"
+      firmware_version:
+        description: "Firmware Version (e.g. 21.333.64.00.1456)"
+        required: true
+        type: string
+        default: "21.333.64.00.1456"
+      webui_version:
+        description: "WEBUI Version (e.g. WEBUI_17.100.20.01.1456_RE5)"
+        required: true
+        type: string
+        default: "WEBUI_17.100.20.01.1456_RE5"
 
 permissions:
   contents: read
 
 jobs:
-  validate-and-download:
+  build-firmware:
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential qtbase5-dev zlib1g-dev cpio gzip file curl libc6:i386
 
       - name: Validate selected family and overlay
         shell: bash
@@ -53,55 +74,119 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d "base/$FAMILY" ]; then
-            echo "::error::base/$FAMILY does not exist in this branch."
-            echo "Available base directories:"
-            find base -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+            echo "::error::base/$FAMILY does not exist."
             exit 1
           fi
           if [ ! -d "device_overlay/$OVERLAY" ]; then
-            echo "::error::device_overlay/$OVERLAY does not exist in this branch."
-            echo "Available overlay directories:"
+            echo "::error::device_overlay/$OVERLAY does not exist."
+            echo "Available overlays:"
             find device_overlay -mindepth 1 -maxdepth 4 -type d -printf '%P\n' | sort
             exit 1
           fi
           echo "Selected family: $FAMILY"
           echo "Selected overlay: $OVERLAY"
 
-      - name: Download selected firmware
-        shell: bash
+      - name: Check required files
+        run: |
+          set -euo pipefail
+          test -f ./build.sh
+          test -f ./sign
+          test -f ./private.key
+          test -f ./public.key
+          test -f tools/bake_firmware.cpp
+          test -f tools/ptable.cpp
+          test -f tools/sio.cpp
+          chmod +x ./sign ./build.sh
+
+      - name: Compile firmware partition tool
+        run: |
+          set -euo pipefail
+          g++ -O2 -Wall -fPIC -no-pie \
+            tools/bake_firmware.cpp tools/ptable.cpp tools/sio.cpp \
+            -o work/bake_firmware \
+            $(pkg-config --cflags --libs Qt5Widgets Qt5Core) -lz
+          test -x work/bake_firmware
+
+      - name: Download and prepare original firmware
         env:
           FIRMWARE_URL: ${{ inputs.firmware_url }}
         run: |
           set -euo pipefail
-          mkdir -p input output
-          curl --fail --location --retry 3 --retry-delay 2 "$FIRMWARE_URL" -o input/original.bin
-          test -s input/original.bin
-          file input/original.bin
-          sha256sum input/original.bin | tee output/original.sha256
+          mkdir -p work orig_fw output
+          curl -fL --retry 3 "$FIRMWARE_URL" -o work/original.bin
+          test -s work/original.bin
+          
+          # Remove original signature
+          ./sign -r work/original.bin work/original_r.bin
+          test -s work/original_r.bin
 
-      - name: Upload downloaded input for verification
-        uses: actions/upload-artifact@v4
-        with:
-          name: balong-input-${{ inputs.family }}
-          path: |
-            input/original.bin
-            output/original.sha256
-          if-no-files-found: error
-          retention-days: 7
+      - name: Extract System and APP partitions
+        run: |
+          set -euo pipefail
+          work/bake_firmware extract \
+            work/original_r.bin \
+            work/System.bin \
+            work/APP.bin
+          test -s work/System.bin
+          test -s work/APP.bin
 
-      - name: Summary
-        shell: bash
+      - name: Unpack original filesystems
+        run: |
+          set -euo pipefail
+          mkdir -p orig_fw/system orig_fw/app
+          (cd orig_fw/system && cpio -idm --no-absolute-filenames < ../../work/System.bin)
+          (cd orig_fw/app && cpio -idm --no-absolute-filenames < ../../work/APP.bin)
+
+      - name: Build modified firmware filesystems
         env:
           FAMILY: ${{ inputs.family }}
           OVERLAY: ${{ inputs.device_overlay }}
         run: |
-          {
-            echo "## Selected build settings"
-            echo "- Firmware URL: provided"
-            echo "- Balong family: \`$FAMILY\`"
-            echo "- Device overlay: \`$OVERLAY\`"
-            echo
-            echo "Firmware downloaded and overlay validated."
-            echo
-            echo "**Important:** This workflow currently only validates the selection and downloads the firmware. It does not yet extract firmware partitions, run build.sh, replace partitions, or sign a final firmware. Those steps require a verified command-line unpacker/replacer."
-          } >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          # OVERLAY mein '/' ho sakta hai, isliye quotes use karna zaroori hai
+          ./build.sh "$FAMILY" "$OVERLAY" orig_fw
+          test -s workdir/system.cpio
+          test -s workdir/app.cpio
+
+      - name: Replace System and APP partitions
+        run: |
+          set -euo pipefail
+          work/bake_firmware replace \
+            work/original_r.bin \
+            workdir/system.cpio \
+            workdir/app.cpio \
+            work/modified_r.bin
+          test -s work/modified_r.bin
+
+      - name: Sign modified firmware
+        env:
+          FW_VER: ${{ inputs.firmware_version }}
+          WEBUI_VER: ${{ inputs.webui_version }}
+        run: |
+          set -euo pipefail
+          # Sign step jisme ISO ke aage WEBUI_ lagana zaroori hai
+          ./sign -s \
+            work/modified_r.bin \
+            work/firmware-signed.bin \
+            ./private.key ./public.key \
+            -sv 1.3 \
+            -i ISO:$WEBUI_VER WEBUI:$WEBUI_VER \
+            -p FW:$FW_VER
+          
+          test -s work/firmware-signed.bin
+
+      - name: Prepare artifacts
+        run: |
+          set -euo pipefail
+          cp work/firmware-signed.bin output/firmware-signed.bin
+          cp work/modified_r.bin output/modified-unsigned.bin
+          sha256sum output/* > output/SHA256SUMS.txt
+          ls -lh output/
+
+      - name: Upload final firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: balong-final-firmware
+          path: output/
+          if-no-files-found: error
+          retention-days: 7
