@@ -1,0 +1,66 @@
+name: Test bake_firmware.cpp compilation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "tools/**"
+      - ".github/workflows/test-bake-tool.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ make pkg-config qtbase5-dev zlib1g-dev
+
+      - name: Check required source files
+        run: |
+          set -eux
+          test -f tools/bake_firmware.cpp
+          test -f tools/ptable.cpp
+          test -f tools/ptable.h
+          test -f tools/sio.cpp
+          test -f tools/sio.h
+          test -f tools/signver.h
+
+      - name: Compile bake_firmware
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -eux
+          mkdir -p build
+          g++ -std=c++11 -fPIC -O2 \
+            -Itools \
+            tools/bake_firmware.cpp \
+            tools/ptable.cpp \
+            tools/sio.cpp \
+            -o build/bake_firmware \
+            $(pkg-config --cflags --libs Qt5Widgets) \
+            -lz
+          file build/bake_firmware
+          set +e
+          ./build/bake_firmware > build/usage-check.log 2>&1
+          rc=$?
+          set -e
+          cat build/usage-check.log
+          test "$rc" -eq 2
+
+      - name: Upload compile-test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bake-firmware-compile-test
+          path: |
+            build/bake_firmware
+            build/usage-check.log
+          if-no-files-found: warn
+          retention-days: 7
