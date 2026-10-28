@@ -13,18 +13,7 @@ int dload_id=-1;
 void fdirlist(int np);
 
 void set_modified();
-// Custom CRC16 implementation to remove dependency on sio.cpp
-unsigned short crc16(uint8_t* buf, int len) {
-    unsigned short crc = 0xFFFF;
-    for (int i = 0; i < len; i++) {
-        crc ^= buf[i];
-        for (int j = 0; j < 8; j++) {
-            if (crc & 1) crc = (crc >> 1) ^ 0xA001;
-            else crc >>= 1;
-        }
-    }
-    return crc;
-}
+
 //******************************************************
 //*  поиск символического имени раздела по его коду
 //******************************************************
