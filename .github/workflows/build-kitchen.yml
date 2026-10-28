@@ -17,69 +17,57 @@ on:
           - v7r2
           - v7r1
       device_overlay:
-        description: "Exact overlay folder name from device_overlay/ (copy from the list in the workflow log)"
+        description: "Choose the exact folder/path from device_overlay/"
         required: true
-        type: string
-        default: "e8372h-153_zong_21.333.64.00.1456"
+        type: choice
+        options:
+          - "e5372_21.290.23.00.00/root"
+          - "e5377_21.316.17.00.00"
+          - "e5573cs-609_21.328.62.00.1460"
+          - "e5573cs-609_zong_21.333.64.00.1460"
+          - "e5573cs_zong_21.328.62.00.1456/root/system"
+          - "e5573cs_zong_21.333.64.01.1456"
+          - "e5577s_Bs_tishknet_21.327.62.01.1365/root"
+          - "e5770_21.329.01.00.00"
+          - "e8372h-153_telma_21.333.64.01.187"
+          - "e8372h-153_zong_21.328.62.02.1460/root/system"
+          - "e8372h-153_zong_21.333.64.00.1456"
+          - "e8372h-608_telenor_21.333.63.00.1460"
 
 permissions:
   contents: read
 
 jobs:
-  list-and-validate:
-    runs-on: ubuntu-latest
-    outputs:
-      overlay_ok: ${{ steps.validate.outputs.overlay_ok }}
+  validate-and-download:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
-      - name: Checkout this kitchen repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Show overlays available in this repository
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Available device_overlay folders:"
-          find device_overlay -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tee /tmp/overlay-list.txt
-          echo
-          echo "Selected overlay: ${{ inputs.device_overlay }}"
-
-      - name: Validate family and selected overlay
-        id: validate
+      - name: Validate selected family and overlay
         shell: bash
         env:
           FAMILY: ${{ inputs.family }}
           OVERLAY: ${{ inputs.device_overlay }}
         run: |
           set -euo pipefail
-          test -d "base/$FAMILY" || {
-            echo "::error::base/$FAMILY does not exist. Available base folders:"
+          if [ ! -d "base/$FAMILY" ]; then
+            echo "::error::base/$FAMILY does not exist in this branch."
+            echo "Available base directories:"
             find base -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
             exit 1
-          }
+          fi
           if [ ! -d "device_overlay/$OVERLAY" ]; then
-            echo "::error::Selected overlay folder does not exist: device_overlay/$OVERLAY"
-            echo "Select/copy an exact folder name from the list printed in the previous step."
-            echo "Available device_overlay folders:"
-            find device_overlay -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+            echo "::error::device_overlay/$OVERLAY does not exist in this branch."
+            echo "Available overlay directories:"
+            find device_overlay -mindepth 1 -maxdepth 4 -type d -printf '%P\n' | sort
             exit 1
           fi
-          echo "overlay_ok=true" >> "$GITHUB_OUTPUT"
-          echo "Validated: family=$FAMILY overlay=$OVERLAY"
+          echo "Selected family: $FAMILY"
+          echo "Selected overlay: $OVERLAY"
 
-  prepare-firmware:
-    needs: list-and-validate
-    runs-on: ubuntu-22.04
-    timeout-minutes: 20
-    steps:
-      - name: Checkout this kitchen repository
-        uses: actions/checkout@v4
-
-      - name: Install required utilities
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl file cpio gzip xz-utils p7zip-full
-
-      - name: Download selected firmware URL
+      - name: Download selected firmware
         shell: bash
         env:
           FIRMWARE_URL: ${{ inputs.firmware_url }}
@@ -88,51 +76,32 @@ jobs:
           mkdir -p input output
           curl --fail --location --retry 3 --retry-delay 2 "$FIRMWARE_URL" -o input/original.bin
           test -s input/original.bin
-          echo "Downloaded firmware:"
           file input/original.bin
           sha256sum input/original.bin | tee output/original.sha256
 
-      - name: Check signing files exist
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f sign ]; then
-            echo "::error::sign utility is missing from repository root."
-            exit 1
-          fi
-          if [ ! -f public.key ]; then
-            echo "::error::public.key is missing from repository root."
-            exit 1
-          fi
-          if [ ! -f private.key ]; then
-            echo "::error::private.key is missing. For a public repository, store it as a GitHub Actions Secret instead of committing it."
-            exit 1
-          fi
-          file sign
-
-      - name: Upload downloaded firmware and overlay selection report
+      - name: Upload downloaded input for verification
         uses: actions/upload-artifact@v4
         with:
-          name: firmware-input-and-overlay-${{ inputs.family }}
+          name: balong-input-${{ inputs.family }}
           path: |
             input/original.bin
             output/original.sha256
           if-no-files-found: error
           retention-days: 7
 
-      - name: Explain next integration requirement
+      - name: Summary
         shell: bash
         env:
           FAMILY: ${{ inputs.family }}
           OVERLAY: ${{ inputs.device_overlay }}
         run: |
           {
-            echo "## Validated build selection"
-            echo "- Family: \`$FAMILY\`"
-            echo "- Overlay: \`$OVERLAY\`"
-            echo "- Firmware downloaded and saved as artifact."
+            echo "## Selected build settings"
+            echo "- Firmware URL: provided"
+            echo "- Balong family: \`$FAMILY\`"
+            echo "- Device overlay: \`$OVERLAY\`"
             echo
-            echo "This workflow currently validates the selected overlay and downloads the firmware."
-            echo "It does not yet extract/replace firmware partitions or produce a signed modified .bin."
-            echo "Those steps require a verified command-line firmware unpacker/replacer; the kitchen build.sh expects already-extracted orig_fw/system and orig_fw/app directories."
+            echo "Firmware downloaded and overlay validated."
+            echo
+            echo "**Important:** This workflow currently only validates the selection and downloads the firmware. It does not yet extract firmware partitions, run build.sh, replace partitions, or sign a final firmware. Those steps require a verified command-line unpacker/replacer."
           } >> "$GITHUB_STEP_SUMMARY"
