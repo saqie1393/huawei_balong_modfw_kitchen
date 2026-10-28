@@ -183,8 +183,9 @@ jobs:
         id: prepare
         run: |
           set -euo pipefail
-          # Create the final firmware name with "_modfw" instead of "_custom"
-          FW_NAME="${{ inputs.original_firmware }}_modfw"
+          
+          # Yeh line ".bin" ko replace karke sahi naam banayegi
+          FW_NAME="$(basename "${{ inputs.original_firmware }}" .bin)_modfw"
           FINAL_FILE="${FW_NAME}.bin"
           
           # Only copy the SIGNED file (no unsigned file)
