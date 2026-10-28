@@ -14,7 +14,7 @@ void fdirlist(int np);
 
 void set_modified();
 // Custom CRC16 implementation to remove dependency on sio.cpp
-extern "C" unsigned short crc16(uint8_t* buf, int len) {
+unsigned short crc16(uint8_t* buf, int len) {
     unsigned short crc = 0xFFFF;
     for (int i = 0; i < len; i++) {
         crc ^= buf[i];
