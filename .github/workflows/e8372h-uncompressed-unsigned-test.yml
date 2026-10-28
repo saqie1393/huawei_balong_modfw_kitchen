@@ -36,22 +36,27 @@ jobs:
           set -euxo pipefail
           cd work/qhuaweiflash
           
-          # 1. sio.h ka include hata dein taake crc16 ka C++ linkage conflict na ho
+          # 1. sio.h ka include hata dein
           sed -i '/#include "sio.h"/d' ptable.cpp
           
-          # 2. "set_modified();" line ke baad crc16 function add karein (includes ke baad)
-          sed -i '/void set_modified();/a \
-unsigned short crc16(uint8_t* buf, int len) { \
-    unsigned short crc = 0xFFFF; \
-    for (int i = 0; i < len; i++) { \
-        crc ^= buf[i]; \
-        for (int j = 0; j < 8; j++) { \
-            if (crc & 1) crc = (crc >> 1) ^ 0xA001; \
-            else crc >>= 1; \
-        } \
-    } \
-    return crc; \
-}' ptable.cpp
+          # 2. crc16 function ko ek alag file mein likhein
+          cat > /tmp/crc16_patch.txt << 'EOF'
+          unsigned short crc16(uint8_t* buf, int len) {
+              unsigned short crc = 0xFFFF;
+              for (int i = 0; i < len; i++) {
+                  crc ^= buf[i];
+                  for (int j = 0; j < 8; j++) {
+                      if (crc & 1) crc = (crc >> 1) ^ 0xA001;
+                      else crc >>= 1;
+                  }
+              }
+              return crc;
+          }
+          EOF
+          
+          # 3. ptable.cpp ke top par crc16 add karein (includes ke baad)
+          # Hum "void set_modified();" line ko dhoond kar uske baad crc16 paste karenge
+          sed -i '/void set_modified();/r /tmp/crc16_patch.txt' ptable.cpp
 
       - name: Create CLI wrapper for qhuaweiflash save logic
         run: |
@@ -126,7 +131,6 @@ unsigned short crc16(uint8_t* buf, int len) { \
         run: |
           set -euxo pipefail
           cd work/qhuaweiflash
-          # SIRF ptable.cpp aur uncompress_fw.cpp compile karein (sio.cpp BILKUL NAHI)
           g++ -O2 -Wall -fPIC -no-pie -I. \
             ../uncompress_fw.cpp ptable.cpp \
             -o ../uncompress_fw \
