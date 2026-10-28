@@ -3,11 +3,13 @@ name: Huawei Balong ModFW Kitchen (Universal Builder)
 on:
   workflow_dispatch:
     inputs:
-      firmware_url:
-        description: "Original firmware .bin direct download URL"
+      original_firmware:
+        description: "Select Original Firmware (from GitHub Releases)"
         required: true
-        type: string
-        default: "https://github.com/saqie1393/huawei_balong_modfw_kitchen/releases/download/firmware-v1/E8372h_UPDATE_21.333.64.00.1456_WEBUI_17.100.20.01.1456_RE5.bin"
+        type: choice
+        options:
+          - "E8372h_UPDATE_21.333.64.00.1456_WEBUI_17.100.20.01.1456_RE5.bin"
+          # Add future original firmware filenames here
       family:
         description: "Balong family folder under base/"
         required: true
@@ -45,7 +47,7 @@ on:
         default: "WEBUI_17.100.20.01.1456_RE5"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-firmware:
@@ -53,6 +55,8 @@ jobs:
     timeout-minutes: 30
     env:
       QT_QPA_PLATFORM: offscreen
+      # Base URL where your original firmwares are stored
+      FIRMWARE_BASE_URL: "https://github.com/saqie1393/huawei_balong_modfw_kitchen/releases/download/firmware-v1"
 
     steps:
       - name: Checkout repository
@@ -83,8 +87,6 @@ jobs:
             find device_overlay -mindepth 1 -maxdepth 4 -type d -printf '%P\n' | sort
             exit 1
           fi
-          echo "Selected family: $FAMILY"
-          echo "Selected overlay: $OVERLAY"
 
       - name: Check required files
         run: |
@@ -101,7 +103,7 @@ jobs:
       - name: Compile firmware partition tool
         run: |
           set -euo pipefail
-          mkdir -p work   # <--- YEH LINE ADD KAREIN
+          mkdir -p work
           g++ -O2 -Wall -fPIC -no-pie \
             tools/bake_firmware.cpp tools/ptable.cpp tools/sio.cpp \
             -o work/bake_firmware \
@@ -110,15 +112,19 @@ jobs:
 
       - name: Download and prepare original firmware
         env:
-          FIRMWARE_URL: ${{ inputs.firmware_url }}
+          FIRMWARE_NAME: ${{ inputs.original_firmware }}
+          BASE_URL: ${{ env.FIRMWARE_BASE_URL }}
         run: |
           set -euo pipefail
           mkdir -p work orig_fw output
-          curl -fL --retry 3 "$FIRMWARE_URL" -o work/original.bin
-          test -s work/original.bin
           
-          # Remove original signature
-          ./sign -r work/original.bin work/original_r.bin
+          DOWNLOAD_URL="${BASE_URL}/${FIRMWARE_NAME}"
+          echo "Downloading from: $DOWNLOAD_URL"
+          
+          curl -fL --retry 3 "$DOWNLOAD_URL" -o "work/$FIRMWARE_NAME"
+          test -s "work/$FIRMWARE_NAME"
+          
+          ./sign -r "work/$FIRMWARE_NAME" work/original_r.bin
           test -s work/original_r.bin
 
       - name: Extract System and APP partitions
@@ -144,7 +150,6 @@ jobs:
           OVERLAY: ${{ inputs.device_overlay }}
         run: |
           set -euo pipefail
-          # OVERLAY mein '/' ho sakta hai, isliye quotes use karna zaroori hai
           ./build.sh "$FAMILY" "$OVERLAY" orig_fw
           test -s workdir/system.cpio
           test -s workdir/app.cpio
@@ -173,16 +178,46 @@ jobs:
             -i "FW:$FW_VER ISO:$WEBUI_VER WEBUI:$WEBUI_VER"
           
           test -s work/firmware-signed.bin
-      
+
       - name: Prepare artifacts
+        id: prepare
         run: |
           set -euo pipefail
-          cp work/firmware-signed.bin output/firmware-signed.bin
+          # Create the final firmware name by appending "_custom" to the original name
+          FW_NAME="${{ inputs.original_firmware }}_custom"
+          FINAL_FILE="${FW_NAME}.bin"
+          
+          cp work/firmware-signed.bin "output/$FINAL_FILE"
           cp work/modified_r.bin output/modified-unsigned.bin
+          
           sha256sum output/* > output/SHA256SUMS.txt
           ls -lh output/
+          
+          # Export variables for the next step (Release creation)
+          echo "firmware_name=$FW_NAME" >> $GITHUB_OUTPUT
+          echo "firmware_file=$FINAL_FILE" >> $GITHUB_OUTPUT
 
-      - name: Upload final firmware
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "${{ steps.prepare.outputs.firmware_name }}"
+          name: "${{ steps.prepare.outputs.firmware_name }}"
+          body: |
+            Automated custom firmware build.
+            - **Original Firmware:** ${{ inputs.original_firmware }}
+            - **Family:** ${{ inputs.family }}
+            - **Overlay:** ${{ inputs.device_overlay }}
+            - **Firmware Version:** ${{ inputs.firmware_version }}
+            - **WEBUI Version:** ${{ inputs.webui_version }}
+          files: |
+            output/*.bin
+            output/SHA256SUMS.txt
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts (backup)
         uses: actions/upload-artifact@v4
         with:
           name: balong-final-firmware
