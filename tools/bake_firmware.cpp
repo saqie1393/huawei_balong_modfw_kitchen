@@ -21,7 +21,18 @@
 
 #include "ptable.h"
 #include "signver.h"
-
+// Standard CRC16 for Huawei partitions
+extern "C" unsigned short crc16(uint8_t* buf, int len) {
+    unsigned short crc = 0xFFFF;
+    for (int i = 0; i < len; i++) {
+        crc ^= buf[i];
+        for (int j = 0; j < 8; j++) {
+            if (crc & 1) crc = (crc >> 1) ^ 0xA001;
+            else crc >>= 1;
+        }
+    }
+    return crc;
+}
 ptable_list* ptable = nullptr;
 int32_t signlen = -1;
 char signver_hash[100] = "";
