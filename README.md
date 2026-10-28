@@ -1,74 +1,48 @@
-Huawei Balong ModFW Kitchen
-===========================
+# Huawei Balong ModFW Kitchen (Automated Builder)
 
-This small script was made to aid in porting modifications of Huawei Balong modems and routers to any original firmware.  
-Not all Balong devices have ready-to-use custom firmware files, as some routers are less common or more expensive than others. Many modifications are universal within selected Balong family and work on any family device.
+This repository provides an **automated GitHub Actions workflow** to build, modify, and sign custom firmware for Huawei Balong modems and routers. 
 
-This script is made to port such universal modifications to any device in automatic mode, and to make modification maintenance easier and cleaner.
+Instead of manually extracting files, running scripts, and signing the firmware on your local machine, you can now trigger a build directly from GitHub and download the ready-to-flash custom firmware.
 
-### Modifications
+## 🚀 Features
 
-Currently there's Balong V7R1, V7R2 and V7R11 family files present in this repository, for devices with and without OLED screen.
+* **Automated Build:** Extracts original firmware, applies modifications, repacks partitions, and signs the final firmware.
+* **GitHub Releases:** The final signed firmware is automatically uploaded to GitHub Releases for easy downloading.
+* **Universal Support:** Select your Balong family, device overlay, and firmware version directly from dropdown menus.
+* **Signed & Ready:** No need to manually remove or add signatures. The workflow handles the `sign` tool and keys automatically.
 
-Features:
+## 🛠️ How to Build Custom Firmware
 
+You don't need any programming knowledge or local tools. Just follow these steps:
+
+1. Go to the **Actions** tab of this repository.
+2. Click on **"Huawei Balong ModFW Kitchen (Universal Builder)"** in the left sidebar.
+3. Click the **"Run workflow"** button.
+4. Fill in the dropdowns:
+   * **Original Firmware:** Select the base firmware (stored in GitHub Releases).
+   * **Balong Family:** Select the correct family (e.g., `v7r11`, `v7r2`, `v7r1`, etc.).
+   * **Device Overlay:** Select your specific device (e.g., `e8372h-153_zong_21.333.64.00.1456`).
+   * **Firmware Version:** Enter the version (e.g., `21.333.64.00.1456`).
+   * **WEBUI Version:** Enter the WEBUI version (e.g., `WEBUI_17.100.20.01.1456_RE5`).
+5. Click **"Run workflow"**.
+6. Wait for the process to finish (usually 1-2 minutes).
+7. Go to the **Releases** section on the right side of the repository. 
+8. Download your custom firmware! (It will be named like `E8372h_..._modfw.bin`).
+
+## ✨ Features Included in the Custom Firmware
+
+The modifications applied automatically include:
 * ADB and Telnet access
-* Support for IPv6 on mobile networks (disabled by default, could be activated "ipv6" script)
-* The stock busybox, iptables and ip6tables binaries are replaced with full-fledged versions
-* "atc" utility is installed to send AT commands from the console
-* "ttl" script to modify (fix) TTL (for IPv4) and HL (for IPv6) of forwarded packets
-* "imei" script to change IMEI
-* A local transparent proxy server "tpws" and a script "anticensorship" to circumvent censorship to sites from the registry of prohibited sites in Russian Federation (IPv4 only)
-* DNS over TLS resolver stubby (version 1.5.2, compiled with OpenSSL 1.0.2u) and DNS-level adblock (IPv4 only)
-* Unlock of all NVRAM items
-* AT^DATALOCK unlock patch
-* Unsigned kernel module loading patch (for 21.333+ firmware versions)
-* OpenVPN (version 2.5.0, compiled with OpenSSL 1.0.2u) and scripts for DNS redirection
-* curl (version 7.74.0, compiled with OpenSSL 1.0.2u)
-* Script for installing Entware application repository with [more than 2500 packages available](http://bin.entware.net/armv7sf-k3.2/Packages.html)
-* "adblock_update" script for updating the list of advertising domains
-* Removed mobile connection logging (mobile logger) to extend flash memory lifetime
+* IPv6 support on mobile networks
+* Full-fledged `busybox`, `iptables`, and `ip6tables`
+* `atc` utility (for sending AT commands)
+* TTL/HL fix scripts (`ttl`) and IMEI change scripts (`imei`)
+* DNS over TLS (stubby) and DNS-level adblock
+* Unlocked NVRAM items
+* OpenVPN and `curl`
+* Entware repository installation script
+* And much more!
 
-### Folder structure
+## ⚠️ Disclaimer
 
-The kitchen has 2 main directories: **base** directory, where the family files are stored, and **device_overlay** directory, for device-specific scripts, configuration and binary files.
-
-There are also pre-copy and post-copy scripts, which run before and after base and device_overlay files are copied, as well as output (building) scripts, which output final cpio image.
-
-Consider the following: you want to build a firmware for E8372h-153 version 21.333.64.00.1456. You take the original firmware, unpack it, and run the script:
-
-```
-$ ./build.sh v7r11 e8372h orig_fw
-
-    Original firmware
-            ⇓
-       base → v7r11
-            ⇓
- device_overlay → e8372h
-            ⇓
-     Custom firmware
-```
-
-1. The **original firmware** is copied into working directory `workdir`
-2. `base/v7r11/before_copy.sh` is executed
-3. `base/v7r11/` files are copied into `workdir`
-4. `base/v7r11/after_copy.sh` is executed
-5. `device_overlay/e8372h/before_copy.sh` is executed
-6. `device_overlay/e8372h/` files are copied
-7. `device_overlay/e8372h/after_copy.sh` is executed
-8. `device_overlay/e8372h/output.sh` is executed. If it's missing, `base/v7r11/output.sh` is run.
-
-You'll get modified file system in `workdir/system` and cpio image in `workdir/system.cpio`.
-
-### How to use
-
-Add your device folder into `device_overlay` and execute the script.
-
-```
-build.sh <balong family from base folder> <device name from device_overlay> <original firmware directory>
-Example: build.sh v7r11 e8372h-153_zong_21.333.64.00.1456 orig_fw
-```
-
-Original firmware directory should contain `system` and `app` directories with files from corresponding partitions. Do get this structure, the firmware should be unpacked first (could be done with [balongflash](https://github.com/forth32/balongflash/)), then the `system` and `app` partitions should be unpacked with `cpio -iv < file.bin` command.
-
-Modem families (V7R1/V7R11 etc) are described in [balong_series](https://github.com/Huawei-LTE-routers-mods/README/blob/master/balong_series.md) document.
+Flashing custom firmware carries risks. Ensure you have a backup and understand the flashing process for your specific device. Use this kitchen at your own risk.
