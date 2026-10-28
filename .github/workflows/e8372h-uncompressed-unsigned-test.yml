@@ -1,0 +1,210 @@
+name: Test E8372h Uncompressed and Unsigned BIN
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  firmware:
+    runs-on: ubuntu-22.04
+    env:
+      ORIGINAL_URL: https://github.com/saqie1393/huawei_balong_modfw_kitchen/releases/download/firmware-v1/E8372h_UPDATE_21.333.64.00.1456_WEBUI_17.100.20.01.1456_RE5.bin
+      ORIGINAL_NAME: E8372h_UPDATE_21.333.64.00.1456_WEBUI_17.100.20.01.1456_RE5.bin
+
+    steps:
+      - name: Checkout kitchen repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential qtbase5-dev zlib1g-dev file curl
+
+      - name: Download qhuaweiflash source
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 https://github.com/forth32/qhuaweiflash.git work/qhuaweiflash
+          mkdir -p work/output
+
+      - name: Create CLI wrapper for qhuaweiflash save logic
+        run: |
+          set -euxo pipefail
+          cat > work/uncompress_fw.cpp <<'CPP'
+          #include <QtWidgets/QApplication>
+          #include <QtWidgets/QComboBox>
+          #include <cstdio>
+          #include <cstdint>
+          #include <cstdlib>
+          #include <cstring>
+          #include "ptable.h"
+          #include "signver.h"
+
+          int32_t signlen = -1;
+          char signver_hash[100] = "";
+          QComboBox* pselector = nullptr;
+          void set_modified() {}
+          void fdirlist(int) {}
+
+          int main(int argc, char** argv) {
+              QApplication app(argc, argv);
+              if (argc != 3) {
+                  std::fprintf(stderr, "Usage: uncompress_fw INPUT.bin OUTPUT.bin\n");
+                  return 2;
+              }
+
+              FILE* in = std::fopen(argv[1], "rb");
+              if (!in) {
+                  std::perror("open input");
+                  return 1;
+              }
+
+              ptable_list table;
+              table.findparts(in);
+              std::fclose(in);
+
+              if (table.index() < 1) {
+                  std::fprintf(stderr, "ERROR: no firmware partitions detected\n");
+                  return 1;
+              }
+
+              FILE* out = std::fopen(argv[2], "wb");
+              if (!out) {
+                  std::perror("open output");
+                  return 1;
+              }
+
+              // Mirrors qhuaweiflash fw_saver(false, false):
+              // 92-byte prefix followed by every partition saved with zlib disabled.
+              uint8_t hdr[92] = {};
+              extern int dload_id;
+              hdr[0] = static_cast<uint8_t>(dload_id & 7);
+              if (signlen != -1) hdr[0] |= 0x8;
+
+              bool ok = std::fwrite(hdr, 1, sizeof(hdr), out) == sizeof(hdr);
+              for (int i = 0; ok && i < table.index(); ++i) {
+                  table.save_part(i, out, false);
+              }
+              if (std::fclose(out) != 0) ok = false;
+
+              if (!ok) {
+                  std::fprintf(stderr, "ERROR: failed writing output firmware\n");
+                  std::remove(argv[2]);
+                  return 1;
+              }
+
+              std::printf("Saved uncompressed firmware: %s; partitions=%d\n",
+                          argv[2], table.index());
+              return 0;
+          }
+          CPP
+
+          cd work/qhuaweiflash
+          g++ -O2 -Wall \
+            ../uncompress_fw.cpp ptable.cpp sio.cpp \
+            -o ../uncompress_fw \
+            $(pkg-config --cflags --libs Qt5Widgets Qt5Core) \
+            -lz
+
+      - name: Download original firmware
+        run: |
+          set -euxo pipefail
+          curl -fL --retry 3 "$ORIGINAL_URL" -o "work/$ORIGINAL_NAME"
+          test -s "work/$ORIGINAL_NAME"
+          echo "Original firmware size:"
+          stat -c '%n %s bytes' "work/$ORIGINAL_NAME"
+          file "work/$ORIGINAL_NAME"
+
+      - name: Remove zlib compression using qhuaweiflash save logic
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euxo pipefail
+          ./work/uncompress_fw "work/$ORIGINAL_NAME" work/uncompressed.bin
+          test -s work/uncompressed.bin
+
+          ORIGINAL_SIZE=$(stat -c '%s' "work/$ORIGINAL_NAME")
+          UNCOMPRESSED_SIZE=$(stat -c '%s' work/uncompressed.bin)
+
+          echo "Original:      $ORIGINAL_SIZE bytes"
+          echo "Uncompressed:  $UNCOMPRESSED_SIZE bytes"
+
+          # Reject the known-bad tiny output case.
+          if [ "$UNCOMPRESSED_SIZE" -lt 1000000 ]; then
+            echo "::error::Uncompressed output is unexpectedly small; do not use it."
+            exit 1
+          fi
+
+          file work/uncompressed.bin
+          sha256sum "work/$ORIGINAL_NAME" work/uncompressed.bin
+
+      - name: Try removing signature from uncompressed BIN
+        id: unsign
+        continue-on-error: true
+        run: |
+          set -u
+          if [ ! -x ./sign ]; then
+            chmod +x ./sign 2>/dev/null || true
+          fi
+
+          if [ ! -f ./sign ]; then
+            echo "sign tool not found in repository root." | tee work/unsign-status.txt
+            exit 1
+          fi
+
+          set +e
+          ./sign -r work/uncompressed.bin work/unsigned.bin > work/sign-log.txt 2>&1
+          SIGN_RC=$?
+          set -e
+          cat work/sign-log.txt
+
+          if [ -f work/unsigned.bin ]; then
+            UNSIGNED_SIZE=$(stat -c '%s' work/unsigned.bin)
+          else
+            UNSIGNED_SIZE=0
+          fi
+          echo "sign -r exit code: $SIGN_RC" | tee work/unsign-status.txt
+          echo "unsigned output size: $UNSIGNED_SIZE bytes" | tee -a work/unsign-status.txt
+
+          if [ "$UNSIGNED_SIZE" -lt 1000000 ]; then
+            echo "FAIL: sign -r output is too small; it is not a valid full firmware BIN." | tee -a work/unsign-status.txt
+            exit 1
+          fi
+
+          echo "PASS: output size looks plausible; this is a size check only, not proof that the firmware is flashable." | tee -a work/unsign-status.txt
+          file work/unsigned.bin
+          sha256sum work/unsigned.bin
+
+      - name: Collect diagnostic outputs
+        if: always()
+        run: |
+          mkdir -p work/output
+          for f in \
+            "work/$ORIGINAL_NAME" \
+            work/uncompressed.bin \
+            work/unsigned.bin \
+            work/sign-log.txt \
+            work/unsign-status.txt; do
+            [ ! -f "$f" ] || cp -v "$f" work/output/
+          done
+          {
+            echo "Firmware size report"
+            for f in work/output/*.bin; do
+              [ -f "$f" ] || continue
+              stat -c '%n: %s bytes' "$f"
+              sha256sum "$f"
+            done
+          } > work/output/SIZE_AND_SHA256.txt
+          cat work/output/SIZE_AND_SHA256.txt
+
+      - name: Upload BINs and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e8372h-uncompressed-unsigned-test
+          path: work/output/
+          if-no-files-found: error
+          retention-days: 7
