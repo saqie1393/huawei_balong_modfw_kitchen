@@ -1,0 +1,71 @@
+name: Extract E8372h System and APP partitions
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "tools/bake_firmware.cpp"
+      - ".github/workflows/extract-e8372h-partitions.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ pkg-config qtbase5-dev zlib1g-dev file
+
+      - name: Download original E8372h firmware
+        env:
+          FIRMWARE_URL: https://github.com/saqie1393/huawei_balong_modfw_kitchen/releases/download/firmware-v1/E8372h_UPDATE_21.333.64.00.1456_WEBUI_17.100.20.01.1456_RE5.bin
+        run: |
+          set -eux
+          mkdir -p work output
+          curl --fail --location --retry 3 "$FIRMWARE_URL" -o work/original.bin
+          test -s work/original.bin
+          sha256sum work/original.bin
+
+      - name: Compile partition tool
+        run: |
+          set -eux
+          g++ -std=c++11 -fPIC -O2 \
+            -Itools \
+            tools/bake_firmware.cpp \
+            tools/ptable.cpp \
+            tools/sio.cpp \
+            -o work/bake_firmware \
+            $(pkg-config --cflags --libs Qt5Widgets) \
+            -lz
+          file work/bake_firmware
+
+      - name: Extract System and APP
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -eux
+          work/bake_firmware extract \
+            work/original.bin \
+            output/System.bin \
+            output/APP.bin
+          test -s output/System.bin
+          test -s output/APP.bin
+          ls -lh output/
+          file output/System.bin output/APP.bin
+          sha256sum output/System.bin output/APP.bin
+
+      - name: Upload extracted partitions
+        uses: actions/upload-artifact@v4
+        with:
+          name: e8372h-system-app-partitions
+          path: |
+            output/System.bin
+            output/APP.bin
+          if-no-files-found: error
+          retention-days: 7
