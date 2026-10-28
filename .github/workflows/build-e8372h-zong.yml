@@ -1,6 +1,4 @@
-from pathlib import Path
-p = Path("/mnt/data/build-firmware.yml")
-p.write_text(r'''name: Build E8372h Zong modified firmware
+name: Build E8372h Zong modified firmware
 
 on:
   workflow_dispatch:
@@ -148,5 +146,3 @@ jobs:
           path: output/
           if-no-files-found: error
           retention-days: 7
-''', encoding="utf-8")
-print(f"Updated {p} ({p.stat().st_size} bytes)")
