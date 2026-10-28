@@ -103,17 +103,18 @@ jobs:
           }
           CPP
 
-      
-      - name: Compile qhuaweiflash CLI wrapper
+      - name: List qhuaweiflash source files
         run: |
           set -euxo pipefail
-          cd work/qhuaweiflash
+          echo "===== Source files ====="
+          find work/qhuaweiflash -maxdepth 2 -type f \
+            \( -name '*.cpp' -o -name '*.c' -o -name '*.h' \) \
+            | sort
 
-          g++ -O2 -Wall -fPIC -no-pie -I. \
-            ../uncompress_fw.cpp ptable.cpp \
-            -o ../uncompress_fw \
-            $(pkg-config --cflags --libs Qt5Widgets Qt5Core) \
-            -lz
+          echo "===== crc16 references ====="
+          grep -R -n \
+            --include='*.cpp' --include='*.c' --include='*.h' \
+            'crc16[[:space:]]*(' work/qhuaweiflash || true
 
       - name: Download original firmware
         run: |
