@@ -1,15 +1,7 @@
-
-name: Build E8372h Zong Firmware
+name: Build E8372h Zong firmware
 
 on:
   workflow_dispatch:
-    inputs:
-      overlay:
-        description: Device overlay folder name
-        required: true
-        type: choice
-        options:
-          - e8372h-153_zong_21.333.64.00.1456
 
 permissions:
   contents: read
@@ -17,6 +9,10 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    env:
+      ORIGINAL_URL: https://github.com/saqie1393/huawei_balong_modfw_kitchen/releases/download/firmware-v1/E8372h_UPDATE_21.333.64.00.1456_WEBUI_17.100.20.01.1456_RE5.bin
+      ORIGINAL_NAME: E8372h_UPDATE_21.333.64.00.1456_WEBUI_17.100.20.01.1456_RE5.bin
+      WEBUI_VERSION: WEBUI_17.100.20.01.1456_RE5
 
     steps:
       - name: Checkout repository
@@ -25,127 +21,121 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            qtbase5-dev \
-            zlib1g-dev \
-            cpio \
-            file
-
-      - name: Validate overlay
-        env:
-          OVERLAY: ${{ inputs.overlay }}
-        run: |
-          if [ ! -d "device_overlay/$OVERLAY" ]; then
-            echo "::error::Overlay not found: device_overlay/$OVERLAY"
-            exit 1
-          fi
-          echo "Overlay found: $OVERLAY"
+          sudo apt-get install -y build-essential qtbase5-dev zlib1g-dev cpio gzip
 
       - name: Download original firmware
         run: |
-          mkdir -p work output
-          curl -fL --retry 3 \
-            "https://github.com/saqie1393/huawei_balong_modfw_kitchen/releases/download/firmware-v1/E8372h_UPDATE_21.333.64.00.1456_WEBUI_17.100.20.01.1456_RE5.bin" \
-            -o work/original.bin
+          mkdir -p work orig_fw
+          curl -fL "$ORIGINAL_URL" -o "work/$ORIGINAL_NAME"
+          test -s "work/$ORIGINAL_NAME"
 
-          test -s work/original.bin
-          echo "Firmware download successful"
-          ls -lh work/original.bin
-
-      - name: Compile firmware extractor
+      - name: Compile firmware partition tool
         run: |
           g++ -O2 -Wall -fPIC -no-pie \
-            tools/bake_firmware.cpp \
-            tools/ptable.cpp \
-            tools/sio.cpp \
+            tools/bake_firmware.cpp tools/ptable.cpp tools/sio.cpp \
             -o work/bake_firmware \
-            $(pkg-config --cflags --libs Qt5Widgets Qt5Core) \
-            -lz
+            $(pkg-config --cflags --libs Qt5Widgets Qt5Core) -lz
 
-          test -x work/bake_firmware
-          echo "Extractor compiled successfully"
-      - name: Extract System and APP partitions
+      - name: Remove original firmware signature when sign tool is configured
+        shell: bash
         env:
-          QT_QPA_PLATFORM: offscreen
+          SIGN_TOOL_B64: ${{ secrets.SIGN_TOOL_B64 }}
         run: |
-          ./work/bake_firmware extract \
-            work/original.bin \
-            work/System.bin \
-            work/APP.bin
+          set -euo pipefail
+          if [[ -n "${SIGN_TOOL_B64:-}" ]]; then
+            printf '%s' "$SIGN_TOOL_B64" | base64 -d > work/sign
+            chmod +x work/sign
+            QT_QPA_PLATFORM=offscreen work/sign -r "work/$ORIGINAL_NAME"
+            test -s "work/${ORIGINAL_NAME}_r"
+            cp "work/${ORIGINAL_NAME}_r" work/unsigned-original.bin
+          else
+            echo "SIGN_TOOL_B64 not configured; using original firmware as the partition source."
+            cp "work/$ORIGINAL_NAME" work/unsigned-original.bin
+          fi
 
+      - name: Extract System and APP partitions
+        run: |
+          set -euo pipefail
+          QT_QPA_PLATFORM=offscreen work/bake_firmware extract \
+            work/unsigned-original.bin work/System.bin work/APP.bin
           test -s work/System.bin
           test -s work/APP.bin
-
           file work/System.bin work/APP.bin
 
-          file -b work/System.bin | grep -q "cpio archive"
-          file -b work/APP.bin | grep -q "cpio archive"
-
-          echo "System and APP extraction successful"
-
-      - name: Unpack CPIO partitions
+      - name: Unpack original CPIO filesystems
         run: |
+          set -euo pipefail
           mkdir -p orig_fw/system orig_fw/app
+          (cd orig_fw/system && cpio -idm --no-absolute-filenames < ../../work/System.bin)
+          (cd orig_fw/app && cpio -idm --no-absolute-filenames < ../../work/APP.bin)
 
-          (
-            cd orig_fw/system
-            cpio -idm --no-absolute-filenames \
-              < ../../work/System.bin
-          )
-
-          (
-            cd orig_fw/app
-            cpio -idm --no-absolute-filenames \
-              < ../../work/APP.bin
-          )
-
-          test -n "$(find orig_fw/system -mindepth 1 -print -quit)"
-          test -n "$(find orig_fw/app -mindepth 1 -print -quit)"
-
-          echo "System files: $(find orig_fw/system -type f | wc -l)"
-          echo "APP files: $(find orig_fw/app -type f | wc -l)"
-
-      - name: Run Balong firmware kitchen
-        env:
-          OVERLAY: ${{ inputs.overlay }}
+      - name: Build modified firmware filesystems
         run: |
-          chmod +x build.sh
-          ./build.sh v7r11 "$OVERLAY" orig_fw
+          set -euo pipefail
+          ./build.sh v7r11 e8372h-153_zong_21.333.64.00.1456 orig_fw
+          test -s workdir/system.cpio
+          test -s workdir/app.cpio
 
-      - name: Collect build outputs
-        if: always()
+      - name: Replace System and APP partitions
+        run: |
+          set -euo pipefail
+          QT_QPA_PLATFORM=offscreen work/bake_firmware replace \
+            work/unsigned-original.bin \
+            workdir/system.cpio \
+            workdir/app.cpio \
+            work/modified-unsigned.bin
+          test -s work/modified-unsigned.bin
+          ls -lh work/modified-unsigned.bin
+
+      - name: Sign final firmware when signing secrets are configured
+        shell: bash
+        env:
+          SIGN_TOOL_B64: ${{ secrets.SIGN_TOOL_B64 }}
+          PRIVATE_KEY_B64: ${{ secrets.PRIVATE_KEY_B64 }}
+          PUBLIC_KEY_B64: ${{ secrets.PUBLIC_KEY_B64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SIGN_TOOL_B64:-}" || -z "${PRIVATE_KEY_B64:-}" || -z "${PUBLIC_KEY_B64:-}" ]]; then
+            echo "Signing secrets not all configured. Unsigned firmware will be uploaded for inspection only."
+            cp work/modified-unsigned.bin work/firmware-UNSIGNED-DO-NOT-FLASH.bin
+            exit 0
+          fi
+
+          # Decode the tool and keys from repository Actions Secrets.
+          printf '%s' "$SIGN_TOOL_B64" | base64 -d > work/sign
+          printf '%s' "$PRIVATE_KEY_B64" | base64 -d > work/private.key
+          printf '%s' "$PUBLIC_KEY_B64" | base64 -d > work/public.key
+          chmod +x work/sign
+
+          # Re-sign with the firmware's ISO and WebUI version metadata.
+          work/sign -s \
+            work/modified-unsigned.bin \
+            work/firmware-signed.bin \
+            work/private.key work/public.key \
+            -sv 1.3 \
+            -i "ISO:$WEBUI_VERSION" "WEBUI:$WEBUI_VERSION"
+
+          test -s work/firmware-signed.bin
+          mv work/firmware-signed.bin work/firmware-signed.bin.tmp
+          mv work/firmware-signed.bin.tmp work/firmware-signed.bin
+
+      - name: Prepare artifacts
         run: |
           mkdir -p output
-
-          if [ -d workdir ]; then
-            find workdir -maxdepth 4 -type f -print
-            find workdir -maxdepth 4 -type f \
-              \( -name "*.cpio" -o -name "*.bin" -o -name "*.img" \) \
-              -exec cp -v --parents {} output/ \;
+          cp work/System.bin work/APP.bin work/modified-unsigned.bin output/
+          cp workdir/system.cpio workdir/app.cpio output/
+          if [[ -f work/firmware-signed.bin ]]; then
+            cp work/firmware-signed.bin output/
+          elif [[ -f work/firmware-UNSIGNED-DO-NOT-FLASH.bin ]]; then
+            cp work/firmware-UNSIGNED-DO-NOT-FLASH.bin output/
           fi
-
-          if [ -d orig_fw ]; then
-            echo "Unpacked filesystem directories exist."
-          fi
-
-          {
-            echo "# E8372h Zong Build Summary"
-            echo
-            echo "- Overlay: ${{ inputs.overlay }}"
-            echo "- Firmware: E8372h 21.333.64.00.1456"
-            echo "- System and APP partitions extracted and unpacked."
-            echo "- Final firmware assembly and signing are not performed by this workflow."
-          } > output/BUILD_SUMMARY.md
+          sha256sum output/* > output/SHA256SUMS.txt
+          find output -maxdepth 1 -type f -printf '%f %s bytes\n'
 
       - name: Upload build artifacts
-        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e8372h-zong-kitchen-output
-          path: |
-            output/
-            work/System.bin
-            work/APP.bin
-          if-no-files-found: warn
+          name: e8372h-zong-firmware-build
+          path: output/
+          if-no-files-found: error
           retention-days: 7
