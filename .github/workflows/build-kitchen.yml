@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       firmware_url:
-        description: "Direct URL of original .bin firmware (GitHub Release asset URL)"
+        description: "Original firmware .bin direct download URL"
         required: true
         type: string
         default: "https://github.com/saqie1393/huawei_balong_modfw_kitchen/releases/download/firmware-v1/E8372h_UPDATE_21.333.64.00.1456_WEBUI_17.100.20.01.1456_RE5.bin"
       family:
-        description: "Balong family (must exist under base/)"
+        description: "Balong family folder under base/"
         required: true
         type: choice
         options:
@@ -17,118 +17,122 @@ on:
           - v7r2
           - v7r1
       device_overlay:
-        description: "Exact folder name under device_overlay/"
+        description: "Exact overlay folder name from device_overlay/ (copy from the list in the workflow log)"
         required: true
         type: string
-        default: "e8372h"
-      webui_version:
-        description: "Exact WebUI identifier for sign -s, e.g. WEBUI_17.100.20.01.1456_RE5; leave blank if firmware has no WebUI"
-        required: false
-        type: string
-      firmware_has_webui:
-        description: "Does this firmware include a WebUI partition?"
-        required: true
-        type: boolean
-        default: true
+        default: "e8372h-153_zong_21.333.64.00.1456"
 
 permissions:
   contents: read
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 45
+  list-and-validate:
+    runs-on: ubuntu-latest
+    outputs:
+      overlay_ok: ${{ steps.validate.outputs.overlay_ok }}
     steps:
-      - name: Checkout kitchen
+      - name: Checkout this kitchen repository
         uses: actions/checkout@v4
 
-      - name: Check selected family and overlay
+      - name: Show overlays available in this repository
         shell: bash
         run: |
           set -euo pipefail
-          test -d "base/${{ inputs.family }}" || { echo "::error::Missing base/${{ inputs.family }}"; exit 1; }
-          test -d "device_overlay/${{ inputs.device_overlay }}" || { echo "::error::Missing device_overlay/${{ inputs.device_overlay }}"; exit 1; }
-          test -f build.sh || { echo "::error::build.sh not found"; exit 1; }
+          echo "Available device_overlay folders:"
+          find device_overlay -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tee /tmp/overlay-list.txt
+          echo
+          echo "Selected overlay: ${{ inputs.device_overlay }}"
 
-      - name: Install tools
+      - name: Validate family and selected overlay
+        id: validate
+        shell: bash
+        env:
+          FAMILY: ${{ inputs.family }}
+          OVERLAY: ${{ inputs.device_overlay }}
+        run: |
+          set -euo pipefail
+          test -d "base/$FAMILY" || {
+            echo "::error::base/$FAMILY does not exist. Available base folders:"
+            find base -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+            exit 1
+          }
+          if [ ! -d "device_overlay/$OVERLAY" ]; then
+            echo "::error::Selected overlay folder does not exist: device_overlay/$OVERLAY"
+            echo "Select/copy an exact folder name from the list printed in the previous step."
+            echo "Available device_overlay folders:"
+            find device_overlay -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+            exit 1
+          fi
+          echo "overlay_ok=true" >> "$GITHUB_OUTPUT"
+          echo "Validated: family=$FAMILY overlay=$OVERLAY"
+
+  prepare-firmware:
+    needs: list-and-validate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout this kitchen repository
+        uses: actions/checkout@v4
+
+      - name: Install required utilities
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl wget file cpio gzip xz-utils p7zip-full python3 make g++ qtbase5-dev
+          sudo apt-get install -y curl file cpio gzip xz-utils p7zip-full
 
-      - name: Download original firmware
+      - name: Download selected firmware URL
         shell: bash
+        env:
+          FIRMWARE_URL: ${{ inputs.firmware_url }}
         run: |
           set -euo pipefail
-          mkdir -p input work/orig_fw work/unpacked output
-          curl -fL --retry 3 --retry-delay 2 "${{ inputs.firmware_url }}" -o input/original.bin
+          mkdir -p input output
+          curl --fail --location --retry 3 --retry-delay 2 "$FIRMWARE_URL" -o input/original.bin
           test -s input/original.bin
+          echo "Downloaded firmware:"
           file input/original.bin
           sha256sum input/original.bin | tee output/original.sha256
 
-      - name: Check sign utility and keys
+      - name: Check signing files exist
         shell: bash
         run: |
           set -euo pipefail
           if [ ! -f sign ]; then
-            echo "::error::sign executable/file was not found at repository root."
+            echo "::error::sign utility is missing from repository root."
             exit 1
           fi
-          if [ ! -f private.key ] || [ ! -f public.key ]; then
-            echo "::error::private.key/public.key missing. Do not commit private.key to a public repository; use GitHub Actions Secrets."
+          if [ ! -f public.key ]; then
+            echo "::error::public.key is missing from repository root."
             exit 1
           fi
-          chmod +x sign || true
+          if [ ! -f private.key ]; then
+            echo "::error::private.key is missing. For a public repository, store it as a GitHub Actions Secret instead of committing it."
+            exit 1
+          fi
           file sign
-          ./sign --help || true
 
-      - name: Remove original signature
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Based on the documented utility syntax: sign -r <input firmware>.
-          ./sign -r input/original.bin
-          # The sign utility commonly creates an input-name suffixed _r file.
-          if [ -f input/original.bin_r ]; then
-            cp input/original.bin_r work/firmware_unsigned.bin
-          elif [ -f input/original_r.bin ]; then
-            cp input/original_r.bin work/firmware_unsigned.bin
-          else
-            candidate="$(find input -maxdepth 1 -type f -name '*_r*' -print -quit)"
-            if [ -z "$candidate" ]; then
-              echo "::error::Could not locate the output of sign -r. Check the utility's actual output naming/OS compatibility."
-              find input -maxdepth 1 -type f -printf '%p\n'
-              exit 1
-            fi
-            cp "$candidate" work/firmware_unsigned.bin
-          fi
-
-      - name: Firmware unpacking prerequisite
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "The kitchen README requires extracted system/ and app/ directories in orig_fw."
-          echo "The sign utility removes/rebuilds signatures; it is not a firmware partition extractor."
-          echo "This workflow intentionally stops here until a compatible headless Balong firmware unpacker and partition-replacement CLI are configured."
-          echo "::error::Automatic partition extraction/replacement is not configured yet. qhuaweiflash is a Qt GUI application, and its README does not document a headless CLI."
-          exit 1
-
-      # Once a verified headless unpack/replace tool is configured, the remaining intended stages are:
-      # 1) extract System/APP/(WebUI) partitions from work/firmware_unsigned.bin into work/orig_fw/
-      # 2) cpio -idmv from System and APP partitions into work/orig_fw/system and work/orig_fw/app
-      # 3) ./build.sh "${{ inputs.family }}" "${{ inputs.device_overlay }}" work/orig_fw
-      # 4) replace System/APP (and WebUI only if changed) in the firmware container
-      # 5) ./sign -s unsigned_modified.bin signed_output.bin private.key public.key -sv 1.3
-      #    and append -i ISO:<WEBUI_VERSION> WEBUI:<WEBUI_VERSION> when WebUI is included.
-      # 6) upload signed output as an artifact after integrity checks.
-
-      - name: Upload diagnostics
-        if: always()
+      - name: Upload downloaded firmware and overlay selection report
         uses: actions/upload-artifact@v4
         with:
-          name: balong-build-diagnostics
+          name: firmware-input-and-overlay-${{ inputs.family }}
           path: |
-            input/
-            work/
-            output/
-          if-no-files-found: ignore
+            input/original.bin
+            output/original.sha256
+          if-no-files-found: error
           retention-days: 7
+
+      - name: Explain next integration requirement
+        shell: bash
+        env:
+          FAMILY: ${{ inputs.family }}
+          OVERLAY: ${{ inputs.device_overlay }}
+        run: |
+          {
+            echo "## Validated build selection"
+            echo "- Family: \`$FAMILY\`"
+            echo "- Overlay: \`$OVERLAY\`"
+            echo "- Firmware downloaded and saved as artifact."
+            echo
+            echo "This workflow currently validates the selected overlay and downloads the firmware."
+            echo "It does not yet extract/replace firmware partitions or produce a signed modified .bin."
+            echo "Those steps require a verified command-line firmware unpacker/replacer; the kitchen build.sh expects already-extracted orig_fw/system and orig_fw/app directories."
+          } >> "$GITHUB_STEP_SUMMARY"
