@@ -36,6 +36,7 @@ jobs:
           set -euxo pipefail
           cat > work/uncompress_fw.cpp <<'CPP'
           #include <QtWidgets/QApplication>
+          #include <QtWidgets/QComboBox>
           #include <cstdio>
           #include <cstdint>
           #include <cstdlib>
@@ -92,7 +93,6 @@ jobs:
               }
 
               uint8_t hdr[92] = {};
-              // dload_id is normally global in main.cpp, using 0 as fallback
               hdr[0] = 0; 
               if (signlen != -1) hdr[0] |= 0x8;
 
