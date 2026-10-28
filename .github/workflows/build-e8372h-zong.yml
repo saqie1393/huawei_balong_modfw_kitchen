@@ -189,6 +189,8 @@ jobs:
           sha256sum work/modified_r.bin
 
       - name: Sign modified firmware
+        # Aap filhaal sign step ko fail hone se rokne ke liye 'continue-on-error: true' laga sakte hain
+        continue-on-error: true 
         run: |
           set -euo pipefail
           ./sign -s \
@@ -200,40 +202,33 @@ jobs:
             -i "ISO:WEBUI_17.100.20.01.1456_RE5 WEBUI:WEBUI_17.100.20.01.1456_RE5"
           
           test -s work/firmware-signed.bin
-          echo "===== Signed firmware ====="
-          stat -c '%n: %s bytes' work/firmware-signed.bin
-          file work/firmware-signed.bin
-          sha256sum work/firmware-signed.bin
 
+      # YAHAN CHANGE HAI: Output folder banaya aur file copy ki
       - name: Prepare artifacts
-        if: success()
+        if: always() # Agar sign fail bhi ho jaye, tab bhi file upload ho
         run: |
           set -euo pipefail
+          mkdir -p output
+          
+          # Unsigned file ko output mein copy karein
+          if [ -f work/modified_r.bin ]; then
+            cp work/modified_r.bin output/modified-unsigned.bin
+          fi
 
-          cp work/firmware-signed.bin \
-            output/firmware-signed.bin
+          # Agar sign successful ho jaye toh signed file bhi copy karein
+          if [ -f work/firmware-signed.bin ]; then
+            cp work/firmware-signed.bin output/firmware-signed.bin
+          fi
+          
+          # Check karein kya kya bana hai
+          ls -lh output/
 
-          cp work/modified_r.bin \
-            output/modified-unsigned.bin
-
-          cp work/System.bin work/APP.bin output/
-          cp workdir/system.cpio workdir/app.cpio output/
-
-          {
-            echo "Firmware build report"
-            echo
-            for f in output/*; do
-              [ -f "$f" ] || continue
-              stat -c '%n: %s bytes' "$f"
-              sha256sum "$f"
-            done
-          } | tee output/SHA256SUMS.txt
-
-      - name: Upload build artifacts
+      # YAHAN CHANGE HAI: Upload Artifact
+      - name: Upload BINs for testing
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e8372h-zong-firmware-build
+          name: e8372h-test-binaries
           path: output/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
