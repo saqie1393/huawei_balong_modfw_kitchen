@@ -9,7 +9,7 @@ on:
         type: choice
         options:
           - "E8372h_UPDATE_21.333.64.00.1456_WEBUI_17.100.20.01.1456_RE5.bin"
-          # Add future original firmware filenames here
+          - "E8372h-608_UPDATE_21.333.63.00.1460_WEBUI_17.100.21.00.1460_RE5.bin"
       family:
         description: "Balong family folder under base/"
         required: true
