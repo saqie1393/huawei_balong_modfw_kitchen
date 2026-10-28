@@ -31,17 +31,27 @@ jobs:
           git clone --depth 1 https://github.com/forth32/qhuaweiflash.git work/qhuaweiflash
           mkdir -p work/output
 
-      # YAHAN CHANGE HAI: ptable.cpp ko compile se pehle thoda modify kiya ja raha hai
       - name: Patch ptable.cpp to remove extern "C" and sio.h dependency
         run: |
           set -euxo pipefail
           cd work/qhuaweiflash
+          
           # 1. sio.h ka include hata dein taake crc16 ka C++ linkage conflict na ho
           sed -i '/#include "sio.h"/d' ptable.cpp
           
-          # 2. ptable.cpp ke shuru mein (includes ke baad) crc16 ki definition add karein
-          # (Humne ise extern "C" ke bagair rakha hai taake C++ linkage se match kare)
-          sed -i '1i unsigned short crc16(uint8_t* buf, int len) { unsigned short crc = 0xFFFF; for (int i = 0; i < len; i++) { crc ^= buf[i]; for (int j = 0; j < 8; j++) { if (crc & 1) crc = (crc >> 1) ^ 0xA001; else crc >>= 1; } } return crc; }' ptable.cpp
+          # 2. "set_modified();" line ke baad crc16 function add karein (includes ke baad)
+          sed -i '/void set_modified();/a \
+unsigned short crc16(uint8_t* buf, int len) { \
+    unsigned short crc = 0xFFFF; \
+    for (int i = 0; i < len; i++) { \
+        crc ^= buf[i]; \
+        for (int j = 0; j < 8; j++) { \
+            if (crc & 1) crc = (crc >> 1) ^ 0xA001; \
+            else crc >>= 1; \
+        } \
+    } \
+    return crc; \
+}' ptable.cpp
 
       - name: Create CLI wrapper for qhuaweiflash save logic
         run: |
