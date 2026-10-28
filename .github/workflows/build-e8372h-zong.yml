@@ -1,0 +1,109 @@
+name: Build E8372h Zong Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      overlay:
+        description: Device overlay folder name
+        required: true
+        type: choice
+        options:
+          - e8372h-153_zong_21.333.64.00.1456
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential qtbase5-dev zlib1g-dev cpio
+
+      - name: Validate overlay
+        env:
+          OVERLAY: ${{ inputs.overlay }}
+        run: |
+          test -d "device_overlay/$OVERLAY" || {
+            echo "::error::Overlay not found: device_overlay/$OVERLAY"
+            exit 1
+          }
+
+      - name: Download original firmware
+        run: |
+          mkdir -p work output
+          curl -fL --retry 3 \
+            "https://github.com/saqie1393/huawei_balong_modfw_kitchen/releases/download/firmware-v1/E8372h_UPDATE_21.333.64.00.1456_WEBUI_17.100.20.01.1456_RE5.bin" \
+            -o work/original.bin
+
+      - name: Compile firmware extractor
+        run: |
+          g++ -O2 -Wall tools/bake_firmware.cpp -o work/bake_firmware \
+            $(pkg-config --cflags --libs Qt5Widgets Qt5Core) -lz
+
+      - name: Extract System and APP partitions
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          ./work/bake_firmware extract \
+            work/original.bin \
+            work/System.bin \
+            work/APP.bin
+          file work/System.bin work/APP.bin
+          test "$(file -b work/System.bin | grep -c 'cpio archive')" -eq 1
+          test "$(file -b work/APP.bin | grep -c 'cpio archive')" -eq 1
+
+      - name: Unpack CPIO partitions
+        run: |
+          mkdir -p orig_fw/system orig_fw/app
+          (
+            cd orig_fw/system
+            cpio -idm --no-absolute-filenames < ../../work/System.bin
+          )
+          (
+            cd orig_fw/app
+            cpio -idm --no-absolute-filenames < ../../work/APP.bin
+          )
+          test -n "$(find orig_fw/system -mindepth 1 -print -quit)"
+          test -n "$(find orig_fw/app -mindepth 1 -print -quit)"
+          echo "System files: $(find orig_fw/system -type f | wc -l)"
+          echo "APP files: $(find orig_fw/app -type f | wc -l)"
+
+      - name: Run Balong firmware kitchen
+        env:
+          OVERLAY: ${{ inputs.overlay }}
+        run: |
+          chmod +x build.sh
+          ./build.sh v7r11 "$OVERLAY" orig_fw
+
+      - name: Collect build outputs
+        if: always()
+        run: |
+          mkdir -p output
+          [ ! -f workdir/system.cpio ] || cp -av workdir/system.cpio output/
+          [ ! -f workdir/app.cpio ] || cp -av workdir/app.cpio output/
+          [ ! -d workdir ] || find workdir -maxdepth 2 -type f -print
+          {
+            echo "## Build summary"
+            echo "- Overlay: ${{ inputs.overlay }}"
+            echo "- Original firmware: E8372h 21.333.64.00.1456"
+            echo "- This workflow builds filesystem CPIO outputs only."
+            echo "- It does not assemble or sign a final flashable firmware BIN."
+          } > output/BUILD_SUMMARY.md
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e8372h-zong-kitchen-output
+          path: |
+            output/
+            work/System.bin
+            work/APP.bin
+          if-no-files-found: warn
+          retention-days: 7
