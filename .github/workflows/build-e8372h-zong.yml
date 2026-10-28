@@ -15,6 +15,7 @@ jobs:
       ORIGINAL_URL: https://github.com/saqie1393/huawei_balong_modfw_kitchen/releases/download/firmware-v1/E8372h_UPDATE_21.333.64.00.1456_WEBUI_17.100.20.01.1456_RE5.bin
       ORIGINAL_NAME: E8372h_UPDATE_21.333.64.00.1456_WEBUI_17.100.20.01.1456_RE5.bin
       WEBUI_VERSION: "17.100.20.01.1456"
+      QT_QPA_PLATFORM: offscreen
 
     steps:
       - name: Checkout repository
@@ -32,6 +33,7 @@ jobs:
             cpio \
             gzip \
             file \
+            curl \
             libc6:i386
 
       - name: Check repository files
@@ -42,6 +44,9 @@ jobs:
           test -f ./sign
           test -f ./private.key
           test -f ./public.key
+          test -f tools/bake_firmware.cpp
+          test -f tools/ptable.cpp
+          test -f tools/sio.cpp
 
           chmod +x ./sign ./build.sh
 
@@ -51,19 +56,22 @@ jobs:
           echo "===== Signing keys ====="
           file ./private.key ./public.key
 
-          echo "===== Repository files checked ====="
-
       - name: Download original firmware
         run: |
           set -euo pipefail
 
+          rm -rf work orig_fw output
           mkdir -p work orig_fw output
 
-          curl -fL "$ORIGINAL_URL" \
+          curl -fL --retry 3 "$ORIGINAL_URL" \
             -o "work/$ORIGINAL_NAME"
 
           test -s "work/$ORIGINAL_NAME"
+
+          echo "===== Original firmware ====="
+          stat -c '%n: %s bytes' "work/$ORIGINAL_NAME"
           file "work/$ORIGINAL_NAME"
+          sha256sum "work/$ORIGINAL_NAME"
 
       - name: Compile firmware partition tool
         run: |
@@ -78,6 +86,8 @@ jobs:
             -lz
 
           test -x work/bake_firmware
+          work/bake_firmware --help || true
+          ls -lh work/bake_firmware
 
       - name: Remove original firmware signature
         run: |
@@ -88,14 +98,26 @@ jobs:
             work/original_r.bin
 
           test -s work/original_r.bin
-          ls -lh work/original_r.bin
+
+          ORIGINAL_SIZE=$(stat -c '%s' "work/$ORIGINAL_NAME")
+          RESTORED_SIZE=$(stat -c '%s' work/original_r.bin)
+
+          echo "Original: $ORIGINAL_SIZE bytes"
+          echo "After sign -r: $RESTORED_SIZE bytes"
+
+          if [ "$RESTORED_SIZE" -lt 1000000 ]; then
+            echo "::error::Signature removal output is too small."
+            exit 1
+          fi
+
+          file work/original_r.bin
+          sha256sum work/original_r.bin
 
       - name: Extract System and APP partitions
         run: |
           set -euo pipefail
 
-          QT_QPA_PLATFORM=offscreen \
-            work/bake_firmware extract \
+          work/bake_firmware extract \
             work/original_r.bin \
             work/System.bin \
             work/APP.bin
@@ -103,7 +125,9 @@ jobs:
           test -s work/System.bin
           test -s work/APP.bin
 
-          ls -lh work/System.bin work/APP.bin
+          echo "===== Extracted partitions ====="
+          stat -c '%n: %s bytes' work/System.bin work/APP.bin
+          file work/System.bin work/APP.bin
 
       - name: Unpack original filesystems
         run: |
@@ -123,6 +147,13 @@ jobs:
               < ../../work/APP.bin
           )
 
+          test -d orig_fw/system
+          test -d orig_fw/app
+
+          echo "===== Extracted file counts ====="
+          find orig_fw/system -type f | wc -l
+          find orig_fw/app -type f | wc -l
+
       - name: Build modified firmware filesystems
         run: |
           set -euo pipefail
@@ -135,19 +166,27 @@ jobs:
           test -s workdir/system.cpio
           test -s workdir/app.cpio
 
+          echo "===== Modified filesystem images ====="
+          stat -c '%n: %s bytes' \
+            workdir/system.cpio \
+            workdir/app.cpio
+
       - name: Replace System and APP partitions
         run: |
           set -euo pipefail
 
-          QT_QPA_PLATFORM=offscreen \
-            work/bake_firmware replace \
+          work/bake_firmware replace \
             work/original_r.bin \
             workdir/system.cpio \
             workdir/app.cpio \
             work/modified_r.bin
 
           test -s work/modified_r.bin
-          ls -lh work/modified_r.bin
+
+          echo "===== Modified unsigned firmware ====="
+          stat -c '%n: %s bytes' work/modified_r.bin
+          file work/modified_r.bin
+          sha256sum work/modified_r.bin
 
       - name: Sign modified firmware
         run: |
@@ -155,6 +194,7 @@ jobs:
 
           test -s ./private.key
           test -s ./public.key
+          test -s work/modified_r.bin
 
           ./sign -s \
             work/modified_r.bin \
@@ -166,12 +206,13 @@ jobs:
 
           test -s work/firmware-signed.bin
 
-          echo "===== Signed output file ====="
-          ls -lh work/firmware-signed.bin
+          echo "===== Signed firmware ====="
+          stat -c '%n: %s bytes' work/firmware-signed.bin
           file work/firmware-signed.bin
           sha256sum work/firmware-signed.bin
 
       - name: Prepare artifacts
+        if: success()
         run: |
           set -euo pipefail
 
@@ -184,16 +225,21 @@ jobs:
           cp work/System.bin work/APP.bin output/
           cp workdir/system.cpio workdir/app.cpio output/
 
-          sha256sum output/* \
-            > output/SHA256SUMS.txt
-
-          find output -maxdepth 1 -type f \
-            -printf '%f %s bytes\n'
+          {
+            echo "Firmware build report"
+            echo
+            for f in output/*; do
+              [ -f "$f" ] || continue
+              stat -c '%n: %s bytes' "$f"
+              sha256sum "$f"
+            done
+          } | tee output/SHA256SUMS.txt
 
       - name: Upload build artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e8372h-zong-firmware-build
           path: output/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 7
