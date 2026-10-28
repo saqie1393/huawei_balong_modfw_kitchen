@@ -15,9 +15,12 @@ on:
         required: true
         type: choice
         options:
-          - v7r11
-          - v7r2
           - v7r1
+          - v7r11
+          - v7r11_oled
+          - v7r1_oled
+          - v7r2
+          - v7r2_oled
       device_overlay:
         description: "Choose the exact folder/path from device_overlay/"
         required: true
