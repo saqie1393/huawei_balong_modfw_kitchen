@@ -189,8 +189,6 @@ jobs:
           sha256sum work/modified_r.bin
 
       - name: Sign modified firmware
-        # Aap filhaal sign step ko fail hone se rokne ke liye 'continue-on-error: true' laga sakte hain
-        continue-on-error: true 
         run: |
           set -euo pipefail
           ./sign -s \
@@ -202,6 +200,10 @@ jobs:
             -i "ISO:WEBUI_17.100.20.01.1456_RE5 WEBUI:WEBUI_17.100.20.01.1456_RE5"
           
           test -s work/firmware-signed.bin
+          echo "===== Signed firmware ====="
+          stat -c '%n: %s bytes' work/firmware-signed.bin
+          file work/firmware-signed.bin
+          sha256sum work/firmware-signed.bin
 
       # YAHAN CHANGE HAI: Output folder banaya aur file copy ki
       - name: Prepare artifacts
